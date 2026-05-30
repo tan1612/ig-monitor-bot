@@ -4,7 +4,6 @@ import httpx
 from urllib.parse import urlparse
 import asyncio
 
-
 class InstagramChecker:
     """
     Check trạng thái public Instagram profile:
