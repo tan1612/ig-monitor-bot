@@ -4,6 +4,7 @@ import httpx
 from urllib.parse import urlparse
 import asyncio
 
+
 class InstagramChecker:
     """
     Check trạng thái public Instagram profile:
@@ -24,14 +25,10 @@ class InstagramChecker:
         "Cache-Control": "max-age=0",
     }
 
+    # Đã rút gọn HEADERS_API giống hệt lệnh CLI chạy thành công
     HEADERS_API = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "vi-VN,vi;q=0.9",
-        "X-IG-App-ID": "936619743392459",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.instagram.com/",
-        "Origin": "https://www.instagram.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "X-IG-App-ID": "936619743392459"
     }
 
     def extract_username(self, raw: str) -> str | None:
@@ -104,17 +101,28 @@ class InstagramChecker:
             ) as client:
                 r = await client.get(url)
 
+            # In ra console để biết request có pass không
+            print(f"[DEBUG API] Gọi API check {username} - Status Code: {r.status_code}")
+
             if r.status_code == 404:
                 result["status"] = "die"
                 return result
 
             if r.status_code != 200:
+                print(f"[DEBUG API] Không trả về 200. Content: {r.text[:200]}")
                 return result
 
-            data = r.json()
+            try:
+                data = r.json()
+            except Exception as e:
+                # Nếu nó trả về HTML bắt login, sẽ in lỗi ra đây
+                print(f"[DEBUG API] Lỗi parse JSON (có thể bị bắt login): {e}. Response: {r.text[:200]}")
+                return result
+
             user = data.get("data", {}).get("user")
 
             if not user:
+                print(f"[DEBUG API] Không tìm thấy key 'user' trong JSON: {data}")
                 result["status"] = "die"
                 return result
 
@@ -125,9 +133,12 @@ class InstagramChecker:
             result["is_private"] = bool(user.get("is_private", False))
             result["bio"] = user.get("biography") or None
             result["profile_pic_url"] = user.get("profile_pic_url_hd") or user.get("profile_pic_url")
+            
+            print(f"[DEBUG API] Parse thành công! Verified = {result['verified']}")
             return result
 
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG API] Lỗi mạng/Exception: {e}")
             return result
 
     async def _check_html(self, username: str) -> dict:
