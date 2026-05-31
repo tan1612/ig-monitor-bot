@@ -7,7 +7,7 @@ from telegram.ext import (
     MessageHandler, ContextTypes, filters
 )
 from telegram.constants import ParseMode
-from config import BOT_TOKEN, CHECK_INTERVAL, ADMIN_IDS
+from config import BOT_TOKEN, CHECK_INTERVAL, ADMIN_IDS, ANTHROPIC_API_KEY
 from database import Database
 from checker import InstagramChecker
 from ui import (
@@ -23,13 +23,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 db = Database()
-checker = InstagramChecker()
+checker = InstagramChecker(anthropic_api_key=ANTHROPIC_API_KEY)
 
 WAITING_ADD    = "waiting_add"
 WAITING_UPDATE = "waiting_update"
 
-
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 def is_allowed(user_id: int) -> bool:
     return not ADMIN_IDS or user_id in ADMIN_IDS
@@ -38,7 +36,6 @@ def is_allowed(user_id: int) -> bool:
 async def send_card(bot, chat_id: int, acc: dict, photo_url: str | None = None):
     text     = format_account_card(acc)
     keyboard = account_keyboard(acc["id"], bool(acc.get("monitoring", True)))
-
     if photo_url:
         try:
             await bot.send_photo(
@@ -49,28 +46,27 @@ async def send_card(bot, chat_id: int, acc: dict, photo_url: str | None = None):
             return
         except Exception:
             pass
-
     await bot.send_message(
         chat_id=chat_id, text=text,
         parse_mode=ParseMode.HTML, reply_markup=keyboard
     )
 
 
-async def do_check_and_notify(bot, acc: dict, notify_always: bool = False):
-    """Check một account và gửi thông báo nếu có thay đổi."""
+async def do_check_and_notify(bot, acc: dict):
+    """Check 1 account, gửi thông báo nếu thay đổi."""
     username = acc["username"]
     info = await checker.check(username)
-    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    now  = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     old_status   = acc["status"]
     old_verified = bool(acc.get("verified", False))
     new_status   = info["status"]
     new_verified = bool(info.get("verified", False))
 
-    updates = {
-        "last_check": now,
-        "status": new_status if new_status != "unknown" else old_status,
-    }
+    # Cập nhật DB
+    updates = {"last_check": now}
+    if new_status != "unknown":
+        updates["status"] = new_status
     if new_status == "live":
         updates["verified"]  = int(new_verified)
         updates["full_name"] = info.get("full_name") or acc.get("full_name", "")
@@ -80,39 +76,46 @@ async def do_check_and_notify(bot, acc: dict, notify_always: bool = False):
 
     # Kiểm tra thay đổi
     status_changed   = new_status != "unknown" and new_status != old_status
-    verified_changed = new_status == "live" and new_verified != old_verified
+    verified_changed = (new_status == "live" and old_status == "live"
+                        and new_verified != old_verified)
+
+    async def send_notify(text: str, pic: str | None):
+        try:
+            if pic:
+                await bot.send_photo(
+                    chat_id=acc["user_id"], photo=pic,
+                    caption=text, parse_mode=ParseMode.HTML
+                )
+            else:
+                await bot.send_message(
+                    chat_id=acc["user_id"], text=text, parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            logger.error(f"Notify error @{username}: {e}")
 
     if status_changed:
         db.log_change(username, acc["user_id"], "status", old_status, new_status)
         old_e = status_emoji(old_status, old_verified)
         new_e = status_emoji(new_status, new_verified)
+        old_l = "LIVE" if old_status == "live" else "DIE" if old_status == "die" else "?"
+        new_l = "LIVE" if new_status == "live" else "DIE"
         text = (
             f"🔔 <b>Thay đổi trạng thái!</b>\n\n"
             f"📸 <a href=\"https://instagram.com/{username}\">@{username}</a>\n"
             f"👤 {info.get('full_name') or acc.get('full_name') or '—'}\n"
             f"📝 {acc.get('note') or '—'}\n\n"
-            f"{old_e} <b>{'LIVE' if old_status == 'live' else 'DIE' if old_status == 'die' else '?'}</b>"
-            f" → {new_e} <b>{'LIVE' if new_status == 'live' else 'DIE'}</b>\n\n"
+            f"{old_e} <b>{old_l}</b> → {new_e} <b>{new_l}</b>\n\n"
             f"🕐 {now}"
         )
-        try:
-            pic = info.get("profile_pic_url")
-            if pic:
-                await bot.send_photo(chat_id=acc["user_id"], photo=pic,
-                                     caption=text, parse_mode=ParseMode.HTML)
-            else:
-                await bot.send_message(chat_id=acc["user_id"], text=text, parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.error(f"Notify error: {e}")
+        await send_notify(text, info.get("profile_pic_url"))
 
     elif verified_changed:
         db.log_change(username, acc["user_id"], "verified",
                       str(old_verified), str(new_verified))
         if new_verified:
-            v_text = "🔵 Vừa được <b>TÍch XANH</b>!"
+            v_text = "🔵 Vừa được <b>TÍCH XANH</b>! ✨"
         else:
             v_text = "⚪ Vừa <b>MẤT tích xanh</b>!"
-
         text = (
             f"🔔 <b>Thay đổi tích xanh!</b>\n\n"
             f"📸 <a href=\"https://instagram.com/{username}\">@{username}</a>\n"
@@ -121,15 +124,7 @@ async def do_check_and_notify(bot, acc: dict, notify_always: bool = False):
             f"{v_text}\n\n"
             f"🕐 {now}"
         )
-        try:
-            pic = info.get("profile_pic_url")
-            if pic:
-                await bot.send_photo(chat_id=acc["user_id"], photo=pic,
-                                     caption=text, parse_mode=ParseMode.HTML)
-            else:
-                await bot.send_message(chat_id=acc["user_id"], text=text, parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.error(f"Notify error: {e}")
+        await send_notify(text, info.get("profile_pic_url"))
 
     return acc_updated, info
 
@@ -143,10 +138,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
         "📸 <b>Instagram Monitor Bot</b>\n\n"
-        "Theo dõi trạng thái tài khoản Instagram 24/7.\n"
+        "Theo dõi tài khoản Instagram 24/7.\n"
         "🔔 Tự động thông báo khi:\n"
-        "  • Tài khoản bị xóa / khôi phục\n"
-        "  • Tích xanh xuất hiện / mất đi",
+        "  • 🔴🟢 Tài khoản bị xóa / khôi phục\n"
+        "  • 🔵⚪ Tích xanh xuất hiện / mất đi",
         parse_mode=ParseMode.HTML,
         reply_markup=main_menu_keyboard()
     )
@@ -156,18 +151,17 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
     if context.args:
-        raw = " ".join(context.args)
-        await process_add(update, context, raw)
+        await process_add(update, context, " ".join(context.args))
         return
     context.user_data[WAITING_ADD] = True
     await update.message.reply_text(
         "👤 <b>Thêm tài khoản Instagram</b>\n\n"
         "Nhập username hoặc URL:\n"
-        "<code>@cristiano</code>\n"
-        "<code>cristiano</code>\n"
-        "<code>https://instagram.com/cristiano</code>\n\n"
-        "Có thể thêm ghi chú:\n"
-        "<code>cristiano | Ghi chú</code>",
+        "<code>@yunbray110</code>\n"
+        "<code>yunbray110</code>\n"
+        "<code>https://instagram.com/yunbray110</code>\n\n"
+        "Thêm ghi chú:\n"
+        "<code>yunbray110 | Ghi chú của bạn</code>",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("❌ Hủy", callback_data="cancel_add")
@@ -176,14 +170,13 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def process_add(update: Update, context: ContextTypes.DEFAULT_TYPE, raw: str):
-    parts = [p.strip() for p in raw.split("|")]
-    username_raw = parts[0]
-    note = parts[1] if len(parts) > 1 else ""
+    parts    = [p.strip() for p in raw.split("|")]
+    username = checker.extract_username(parts[0])
+    note     = parts[1] if len(parts) > 1 else ""
 
-    username = checker.extract_username(username_raw)
     if not username:
         await update.message.reply_text(
-            "❌ Username không hợp lệ.\nVí dụ: <code>@cristiano</code> hoặc <code>cristiano | Ghi chú</code>",
+            "❌ Username không hợp lệ.\nVí dụ: <code>@yunbray110</code>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -232,12 +225,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not acc:
             await update.message.reply_text("❌ Không tìm thấy.")
             return
-        note = update.message.text.strip()
-        db.update_account(account_id, note=note)
+        db.update_account(account_id, note=update.message.text.strip())
         acc = db.get_account_by_id(account_id)
         await update.message.reply_text("✅ Đã cập nhật ghi chú!")
         await send_card(context.bot, update.effective_chat.id, acc)
-        return
 
 
 # ─── CALLBACK QUERIES ─────────────────────────────────────────────────────────
@@ -282,9 +273,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "add_new":
         context.user_data[WAITING_ADD] = True
         await query.message.reply_text(
-            "👤 <b>Thêm tài khoản Instagram</b>\n\n"
-            "Nhập username:\n"
-            "<code>@cristiano</code> hoặc <code>cristiano | Ghi chú</code>",
+            "👤 Nhập username Instagram:\n<code>@username</code> hoặc <code>username | Ghi chú</code>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Hủy", callback_data="cancel_add")
@@ -303,9 +292,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         acc = db.get_account_by_id(account_id)
         if not acc or acc["user_id"] != user_id:
             return
-        await query.answer("🔍 Đang check...", show_alert=False)
         msg = await query.message.reply_text("🔍 Đang kiểm tra...")
-        acc_updated, info = await do_check_and_notify(context.bot, acc, notify_always=False)
+        acc_updated, info = await do_check_and_notify(context.bot, acc)
         await msg.delete()
         await send_card(context.bot, update.effective_chat.id, acc_updated,
                         photo_url=info.get("profile_pic_url"))
@@ -317,7 +305,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         new_state = db.toggle_monitoring(account_id)
         acc = db.get_account_by_id(account_id)
-        await query.answer("▶️ Đã BẬT" if new_state else "⏸ Đã TẮT", show_alert=True)
+        await query.answer("▶️ Đã BẬT theo dõi" if new_state else "⏸ Đã TẮT theo dõi", show_alert=True)
         try:
             await query.edit_message_caption(
                 caption=format_account_card(acc), parse_mode=ParseMode.HTML,
@@ -394,9 +382,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = ["📊 <b>Kết quả:</b>\n"]
         for acc in accounts:
             acc_updated, info = await do_check_and_notify(context.bot, acc)
-            s  = status_emoji(acc_updated["status"], bool(acc_updated.get("verified")))
-            vb = "🔵" if acc_updated.get("verified") else ""
-            lines.append(f"{s} <code>@{acc['username']}</code> {acc.get('note','')} {vb}")
+            s = status_emoji(acc_updated["status"], bool(acc_updated.get("verified")))
+            v = " 🔵" if acc_updated.get("verified") and acc_updated.get("status") == "live" else ""
+            lines.append(f"{s} <code>@{acc['username']}</code> {acc.get('note','')}{v}")
             await asyncio.sleep(1)
         lines.append(f"\n<i>{datetime.now().strftime('%H:%M %d/%m/%Y')}</i>")
         await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML,
@@ -408,7 +396,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def monitor_loop(app: Application):
     logger.info("Monitor loop started")
     await asyncio.sleep(15)
-
     while True:
         try:
             accounts = db.get_all_monitoring()
@@ -418,7 +405,7 @@ async def monitor_loop(app: Application):
                     await do_check_and_notify(app.bot, acc)
                     await asyncio.sleep(2)
                 except Exception as e:
-                    logger.error(f"Error checking @{acc['username']}: {e}")
+                    logger.error(f"Error @{acc['username']}: {e}")
                     await asyncio.sleep(3)
         except Exception as e:
             logger.error(f"Monitor loop error: {e}")

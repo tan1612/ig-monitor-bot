@@ -23,7 +23,6 @@ class Database:
                     last_check  TEXT,
                     UNIQUE(username, user_id)
                 );
-
                 CREATE TABLE IF NOT EXISTS change_log (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     username    TEXT NOT NULL,
@@ -40,7 +39,7 @@ class Database:
         try:
             with sqlite3.connect(self.path) as conn:
                 conn.execute(
-                    "INSERT INTO accounts (username, user_id, note, status, verified, full_name, added_at) VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO accounts (username,user_id,note,status,verified,full_name,added_at) VALUES (?,?,?,?,?,?,?)",
                     (username, user_id, note, status, int(verified), full_name,
                      datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
                 )
@@ -103,7 +102,7 @@ class Database:
     def log_change(self, username: str, user_id: int, change_type: str, old_val: str, new_val: str):
         with sqlite3.connect(self.path) as conn:
             conn.execute(
-                "INSERT INTO change_log (username, user_id, change_type, old_val, new_val, changed_at) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO change_log (username,user_id,change_type,old_val,new_val,changed_at) VALUES (?,?,?,?,?,?)",
                 (username, user_id, change_type, old_val, new_val,
                  datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
             )
