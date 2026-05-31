@@ -76,6 +76,8 @@ class InstagramChecker:
             )
 
         if r.status_code != 200:
+            import logging
+            logging.getLogger(__name__).error(f"Anthropic API error {r.status_code}: {r.text[:300]}")
             return empty
 
         data = r.json()
