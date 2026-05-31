@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 
 class InstagramChecker:
     """
-    Check Instagram profile qua Claude API (web search).
-    Hoạt động trên Railway vì api.anthropic.com được phép.
+    Check Instagram profile qua Claude API.
+    Claude sẽ dùng knowledge của mình để xác định verified status.
     """
 
     def __init__(self, anthropic_api_key: str = None):
@@ -36,13 +36,9 @@ class InstagramChecker:
             return empty
 
         try:
-            result = await self._check_via_claude(username)
-            if result["status"] != "unknown":
-                return result
+            return await self._check_via_claude(username)
         except Exception as e:
-            pass
-
-        return empty
+            return empty
 
     async def _check_via_claude(self, username: str) -> dict:
         empty = {
@@ -52,18 +48,19 @@ class InstagramChecker:
         }
 
         prompt = (
-            f'Search Instagram for the account @{username} (https://instagram.com/{username}). '
-            f'Check if this account exists and if it has a blue verification badge. '
-            f'Reply ONLY with valid JSON, no extra text:\n'
-            f'{{"status":"live","verified":true,"full_name":"Name Here"}}\n'
-            f'or {{"status":"die","verified":false,"full_name":null}}\n'
-            f'or {{"status":"unknown","verified":null,"full_name":null}}'
+            f"Do you know the Instagram account @{username}? "
+            f"Based on your knowledge, does this account exist on Instagram "
+            f"and does it have a blue verification badge (verified account)?\n\n"
+            f"Reply ONLY with valid JSON, nothing else:\n"
+            f'If account exists and verified: {{"status":"live","verified":true,"full_name":"Their Name"}}\n'
+            f'If account exists but not verified: {{"status":"live","verified":false,"full_name":"Their Name"}}\n'
+            f'If account does not exist or was deleted: {{"status":"die","verified":false,"full_name":null}}\n'
+            f'If you are not sure: {{"status":"unknown","verified":null,"full_name":null}}'
         )
 
         payload = {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 200,
-            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 150,
             "messages": [{"role": "user", "content": prompt}]
         }
 
@@ -75,7 +72,6 @@ class InstagramChecker:
                     "Content-Type": "application/json",
                     "x-api-key": self.api_key,
                     "anthropic-version": "2023-06-01",
-                    "anthropic-beta": "web-search-2025-03-05",
                 }
             )
 
@@ -83,8 +79,6 @@ class InstagramChecker:
             return empty
 
         data = r.json()
-        
-        # Extract text từ response (có thể có tool_use blocks)
         text = ""
         for block in data.get("content", []):
             if block.get("type") == "text":
@@ -93,9 +87,7 @@ class InstagramChecker:
         if not text.strip():
             return empty
 
-        # Parse JSON từ response
         try:
-            # Tìm JSON trong text
             json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
@@ -103,10 +95,10 @@ class InstagramChecker:
                     "status": result.get("status", "unknown"),
                     "verified": result.get("verified"),
                     "full_name": result.get("full_name"),
-                    "follower_count": result.get("follower_count"),
-                    "is_private": result.get("is_private"),
-                    "profile_pic_url": None,  # Claude không trả về URL ảnh
-                    "bio": result.get("bio"),
+                    "follower_count": None,
+                    "is_private": None,
+                    "profile_pic_url": None,
+                    "bio": None,
                 }
         except Exception:
             pass
